@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { StyleSheet, Text, View, ScrollView, Button, Platform, Dimensions } from 'react-native';
 import * as Location from 'expo-location';
-import * as TaskManager from 'expo-task-manager';
 import axios from 'axios';
 import { getDistance } from 'geolib';
 
@@ -27,7 +26,7 @@ const RealTimeLocation: React.FC = () => {
   });
 
   const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [backgroundLocation, setBackgroundLocation] = useState<LocationData | null>(null);
+  const [lastKnownLocation, setLastKnownLocation] = useState<LocationData | null>(null);
 
   const fetchLocationData = useCallback(async () => {
     setIsLoading(true);
@@ -73,6 +72,47 @@ const RealTimeLocation: React.FC = () => {
     }
   }, []);
 
+  const shouldUpdateLocation = (newLocation: LocationData) => {
+    if (!lastKnownLocation) return true;
+
+    const distance = getDistance(
+      {
+        latitude: lastKnownLocation.latitude,
+        longitude: lastKnownLocation.longitude,
+      },
+      {
+        latitude: newLocation.latitude,
+        longitude: newLocation.longitude,
+      }
+    );
+
+    return distance >= 10; // Update if the user has moved at least 10 meters
+  };
+
+  const updateLocation = async () => {
+    try {
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      });
+      const { latitude, longitude, altitude, accuracy } = location.coords;
+
+      const newLocation: LocationData = {
+        latitude,
+        longitude,
+        altitude,
+        accuracy,
+        address: null, // Address fetching can be skipped for performance
+      };
+
+      if (shouldUpdateLocation(newLocation)) {
+        setLastKnownLocation(newLocation);
+        await fetchLocationData(); // Fetch and update location details
+      }
+    } catch (error) {
+      console.error('Error updating location:', error);
+    }
+  };
+
   useEffect(() => {
     const initializeLocationUpdates = async () => {
       try {
@@ -82,6 +122,11 @@ const RealTimeLocation: React.FC = () => {
           return;
         }
         await fetchLocationData();
+        const locationInterval = setInterval(() => {
+          updateLocation();
+        }, 10000); // Run every 5 seconds
+
+        return () => clearInterval(locationInterval); // Clear interval on unmount
       } catch (error) {
         console.error('Error initializing location updates:', error);
       }
@@ -90,48 +135,12 @@ const RealTimeLocation: React.FC = () => {
     initializeLocationUpdates();
   }, [fetchLocationData]);
 
-  useEffect(() => {
-    TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }: any) => {
-      if (error) {
-        console.error(error);
-        return;
-      }
-
-      if (data) {
-        const { locations } = data;
-        const { latitude, longitude, altitude, accuracy } = locations[0].coords;
-
-        let elevation: number | null = altitude;
-        try {
-          const elevationResponse = await axios.get(
-            `https://api.opentopodata.org/v1/test-dataset?locations=${latitude},${longitude}`
-          );
-          elevation = elevationResponse.data.results[0]?.elevation ?? altitude;
-        } catch (e) {
-          console.warn('Elevation fetch failed in background task');
-        }
-
-        setBackgroundLocation({
-          latitude,
-          longitude,
-          altitude: elevation,
-          accuracy,
-          address: 'Address in background not fetched',
-        });
-      }
-    });
-
-    return () => {
-      Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
-    };
-  }, []);
-
   const startBackgroundLocationUpdates = async () => {
     const { status } = await Location.requestBackgroundPermissionsAsync();
     if (status === 'granted') {
       await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
         accuracy: Location.Accuracy.High,
-        timeInterval: 20000,
+        timeInterval: 10000,
         distanceInterval: 10,
         showsBackgroundLocationIndicator: true,
       });
@@ -196,11 +205,6 @@ const styles = StyleSheet.create({
     marginBottom: 30,
     color: '#3b3b3b',
     textAlign: 'center',
-    fontFamily: 'Roboto-Bold',
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowRadius: 5,
-    elevation: 3,
   },
   infoContainer: {
     backgroundColor: '#ffffff',
@@ -219,19 +223,16 @@ const styles = StyleSheet.create({
     color: '#3f3f3f',
     fontWeight: 'bold',
     marginBottom: 15,
-    fontFamily: 'Roboto-Medium',
   },
   infoText: {
     fontSize: 16,
     color: '#555555',
     marginVertical: 8,
-    fontFamily: 'Roboto-Regular',
   },
   loadingText: {
     fontSize: 18,
     color: '#888',
     marginVertical: 20,
-    fontFamily: 'Roboto-Regular',
   },
 });
 
